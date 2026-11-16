@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 import unittest
+from unittest.mock import Mock, patch
 
 from artboard_print import (
-    BLOCK, CTRL_K, DOWN, LEFT, RIGHT, UP,
-    Board, Cell, build_steps, parse_art, paste_keys, row_ops, xterm256,
+    BLOCK, CTRL_K, CTRL_V, DOWN, LEFT, RIGHT, UP,
+    Board, Cell, Op, build_steps, parse_art, paste_keys, row_ops, xterm256,
 )
 
 WHITE = (255, 255, 255)
@@ -56,17 +57,17 @@ class BuildSteps(unittest.TestCase):
     def test_color_picked_for_every_glyph(self):
         steps = build_steps(parse_art(f"{fg(RED)}ab", WHITE))
         self.assertEqual(steps[:2], [
-            f"{CTRL_K}FF0000\r{paste_keys('a')}",
-            f"{CTRL_K}FF0000\r{paste_keys('b')}",
+            f"{CTRL_K}FF0000\r{paste_keys('a')}{CTRL_V} {RIGHT}",
+            f"{CTRL_K}FF0000\r{paste_keys('b')}{CTRL_V} {RIGHT}",
         ])
 
     def test_reuse_color_picks_once(self):
         steps = build_steps(parse_art(f"{fg(RED)}ab", WHITE), reuse_color=True)
-        self.assertEqual(steps[1], paste_keys("b"))
+        self.assertEqual(steps[1], paste_keys("b") + CTRL_V + " " + RIGHT)
 
     def test_group_merges_same_color_run(self):
         steps = build_steps(parse_art(f"{fg(RED)}ab", WHITE), group=True)
-        self.assertEqual(steps[0], f"{CTRL_K}FF0000\r{paste_keys('ab')}")
+        self.assertEqual(steps[0], f"{CTRL_K}FF0000\r{paste_keys('ab')}{CTRL_V} {RIGHT * 2}")
 
     def test_gaps_move_right(self):
         steps = build_steps(parse_art("a  b", WHITE))
@@ -102,6 +103,52 @@ class RowOps(unittest.TestCase):
         ops = row_ops(parse_art(f"{fg(RED)}abc", WHITE)[0], group=True)
         self.assertEqual(len(ops), 1)
         self.assertEqual(ops[0].advance, 3)
+
+    def test_wide_run_is_stamped_once_and_moves_by_display_width(self):
+        op, = row_ops(parse_art("aあ", WHITE)[0], group=True)
+        self.assertEqual(op.advance, 3)
+        self.assertTrue(op.keys.endswith(paste_keys("aあ") + CTRL_V + " " + RIGHT * 3))
+
+
+class DrawingFeedback(unittest.TestCase):
+    def setUp(self):
+        self.board = Board("session", 0.0, settle=0.0)
+        self.board.send = Mock()
+        self.board.cursor = Mock()
+        self.board.move_to = Mock()
+
+    def test_failed_chunk_is_reanchored_and_retried(self):
+        self.board.cursor.side_effect = [(10, 21), (11, 20)]
+        self.assertEqual(self.board.run([Op("draw", 1)], (10, 20), 12), 1)
+        self.board.move_to.assert_called_once_with((10, 20))
+        self.assertEqual(self.board.send.call_count, 2)
+
+    def test_stuck_cursor_is_an_error_not_success(self):
+        self.board.cursor.return_value = (10, 20)
+        with self.assertRaisesRegex(RuntimeError, "drawing failed after 4 attempts"):
+            self.board.run([Op("draw", 1)], (10, 20), 12)
+        self.assertEqual(self.board.send.call_count, 4)
+
+    def test_cursor_clamps_at_right_canvas_edge(self):
+        self.board.cursor.return_value = (383, 20)
+        self.assertEqual(self.board.run([Op("draw", 2)], (382, 20), 12), 0)
+
+    def test_failed_movement_stops_drawing(self):
+        self.board.cursor.return_value = (10, 20)
+        with self.assertRaisesRegex(RuntimeError, "could not move cursor"):
+            Board.move_to(self.board, (11, 20), attempts=2)
+
+    def test_movement_can_succeed_on_last_attempt(self):
+        self.board.cursor.side_effect = [(10, 20), (11, 20)]
+        self.assertEqual(Board.move_to(self.board, (11, 20), attempts=1), (11, 20))
+
+    def test_history_failure_is_not_an_empty_panel(self):
+        import subprocess
+        with patch("artboard_print.subprocess.run") as run:
+            run.side_effect = subprocess.CalledProcessError(1, "zmx")
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.board.screen()
+            self.assertTrue(run.call_args.kwargs["check"])
 
 
 class InfoPanel(unittest.TestCase):

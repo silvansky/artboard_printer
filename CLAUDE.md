@@ -18,8 +18,9 @@ Keys used (`input.rs`, `data.rs`):
   hex field; `\r` applies and closes; `Esc` discards.
 - Glyphs go in as a **bracketed paste** (`ESC[200~…ESC[201~`). This is not a
   nicety: `handle_byte` only accepts `is_ascii_graphic()`, so `█ ▀ 𜴗` typed as
-  raw UTF-8 are dropped on the floor. Paste paints in the current paint colour
-  and advances the cursor by the glyph's display width.
+  raw UTF-8 are dropped on the floor. Paste now arms a floating brush without
+  painting or advancing. `Ctrl+V` stamps in the current paint colour, `Space`
+  dismisses the brush, then explicit right arrows advance by the display width.
 - Arrows move; `Home`/`End` jump to the canvas edge, not the line start.
 - The Info panel reports `Mode`, `Color` and an absolute `Cursor x,y`. That
   readout is the only feedback channel there is — use it.
@@ -38,8 +39,9 @@ Keys used (`input.rs`, `data.rs`):
   and get pointlessly redrawn.
 - `zmx history <s> --vt` is the screen and costs ~6ms, so polling it is cheap;
   the sleeps around it are the whole runtime. Budget ~1s per verified chunk.
-- **Space does not erase** despite what the in-app help says — it leaves both
-  the cell and the cursor untouched. The working erase key is still unknown.
+- **Space dismisses a floating brush** without painting or moving the cursor.
+- **Exhausted retries are errors.** Do not accept an unexpected cursor as a
+  glyph-width adjustment: a changed paste protocol can otherwise look successful.
 - `zmx send` is byte-for-byte over stdin: `subprocess.run([...], input=keys)`.
 
 ## Shape of the code

@@ -18,9 +18,11 @@ python3 artboard_print.py <zmx-session> <file> [--at X,Y]
 ## How it draws
 
 Per glyph: `Ctrl+K` opens the colour picker, six hex digits set the colour,
-`Enter` applies it, then the glyph goes in as a bracketed paste
-(`ESC[200~…ESC[201~`) — the artboard ignores non-ASCII keystrokes but accepts
-pasted text.
+`Enter` applies it, then a bracketed paste (`ESC[200~…ESC[201~`) arms a
+floating brush. `Ctrl+V` stamps the brush, `Space` dismisses it, and right
+arrows advance by the pasted text's display width. This supports Unicode
+glyphs and same-colour grouped runs. Current late.sh paste handling only
+previews the brush; paste alone no longer paints or advances the cursor.
 
 **The board drops keystrokes under load**, so the driver does not dead-reckon.
 The Info panel reports an absolute `Cursor x,y`; after every chunk of cells the
@@ -32,6 +34,8 @@ column still adds up.
 Every row is re-anchored to an absolute start column, so a loss can never
 accumulate into the rows below — the failure mode that made blind
 `Left x N` row returns shift every later line.
+If movement or drawing still fails after the retry limit, the script stops
+with an error instead of treating an unexpected cursor position as success.
 
 Cells are read from truecolor, 256-colour and basic SGR codes:
 

@@ -6,8 +6,8 @@ active (editing) mode. Drawing starts at the current artboard cursor, which
 becomes the top-left corner of the art.
 
 Each glyph is sent on its own: Ctrl+K opens the colour picker, six hex digits
-set the colour, Enter applies it, then the glyph goes in as a bracketed paste
-(the artboard drops non-ASCII keystrokes but accepts pasted text).
+set the colour, Enter applies it, then a bracketed paste arms a floating brush.
+Ctrl+V stamps it, Space dismisses it, and arrows advance the cursor.
 
 The board silently drops keystrokes under load, so the driver steers by the
 artboard's own `Cursor x,y` readout in the Info panel: every chunk of cells is
@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 ESC = "\x1b"
 CTRL_K = "\x0b"
+CTRL_V = "\x16"
 ENTER = "\r"
 RIGHT = f"{ESC}[C"
 LEFT = f"{ESC}[D"
@@ -195,7 +196,9 @@ def row_ops(row, reuse_color: bool = False, group: bool = False,
         if not reuse_color or cell.color != painted:
             keys += color_keys(cell.color)
             painted = cell.color
-        ops.append(Op(keys + paste_keys(text), advance))
+        # Paste now only arms a floating brush; it neither paints nor moves.
+        # Stamp before dismissing, then advance by the whole run's width.
+        ops.append(Op(keys + paste_keys(text) + CTRL_V + " " + RIGHT * advance, advance))
     return ops
 
 
@@ -229,7 +232,7 @@ class Board:
 
     def screen(self) -> str:
         out = subprocess.run(["zmx", "history", self.session, "--vt"],
-                             capture_output=True).stdout.decode("utf-8", "replace")
+                             capture_output=True, check=True).stdout.decode("utf-8", "replace")
         return SGR.sub("", out)
 
     def state(self):
@@ -278,13 +281,15 @@ class Board:
                 self.send(piece)
                 time.sleep(self.delay)
             position = self.cursor(previous=position)
-        return position
+        if position == target:
+            return position
+        raise RuntimeError(f"could not move cursor to {target}; reached {position}")
 
     def run(self, ops: list[Op], start: Pos, chunk: int, attempts: int = 4) -> int:
         """Draw one row from `start`; returns how many chunks had to be redrawn."""
         redrawn, column = 0, start[0]
         for group in [ops[i:i + chunk] for i in range(0, len(ops), chunk)]:
-            expected = column + sum(op.advance for op in group)
+            expected = min(CANVAS[0] - 1, column + sum(op.advance for op in group))
             for attempt in range(attempts):
                 before = (column, start[1])
                 for op in group:
@@ -299,10 +304,10 @@ class Board:
                     break
                 redrawn += 1
                 if attempt == attempts - 1:
-                    # A glyph the board measures differently is not a lost
-                    # keystroke; take the board's word for where we are.
-                    self.move_to((landed[0], start[1]))
-                    expected = landed[0]
+                    raise RuntimeError(
+                        f"drawing failed after {attempts} attempts: "
+                        f"expected cursor {(expected, start[1])}, got {landed}"
+                    )
                 else:
                     self.move_to(before)
             column = expected
@@ -406,7 +411,8 @@ def main(argv: list[str] | None = None) -> int:
         if index not in wanted:
             continue
         start = (origin[0], origin[1] + index)
-        board.move_to(start)
+        if board.move_to(start) != start:
+            raise RuntimeError(f"could not park the cursor at {start}")
         redrawn += board.run(row_ops(row, args.reuse_color, args.group), start, args.chunk)
         print(f"\rrow {index + 1}/{len(grid)}  redraws {redrawn}",
               end="", file=sys.stderr, flush=True)
@@ -418,4 +424,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    try:
+        sys.exit(main())
+    except (RuntimeError, subprocess.CalledProcessError, OSError) as error:
+        print(f"error: {error}", file=sys.stderr)
+        sys.exit(1)
